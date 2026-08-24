@@ -543,8 +543,11 @@ app.get('/api/admin/users/:userId', adminAuth, async (req, res) => {
     const user = await User.findOne({ userId: req.params.userId });
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
     const refCount = await User.countDocuments({ referredBy: user.userId });
+    const frens = await User.find({ referredBy: user.userId })
+      .select('userId username firstName lastName photoUrl coins createdAt')
+      .sort({ createdAt: -1 });
     const withdrawals = await Withdraw.find({ userId: user.userId }).sort({ timestamp: -1 });
-    res.json({ success: true, user, refCount, withdrawals });
+    res.json({ success: true, user, refCount, frens, withdrawals });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
