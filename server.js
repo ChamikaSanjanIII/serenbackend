@@ -214,25 +214,46 @@ app.get('/api/user/:userId', async (req, res) => {
 });
 
 /**
- * 3. Save / Update Mining State
+ * 3. Save / Update Mining State (Server-Side Multi-Device Sync)
  * POST /api/mining/start
  */
 app.post('/api/mining/start', async (req, res) => {
   const { userId } = req.body;
+  if (!userId) return res.status(400).json({ success: false, message: "userId required" });
+
   const now = Date.now();
+  const SESSION_DURATION_MS = 3600 * 1000; // 1 hour
+
   try {
-    const user = await User.findOneAndUpdate(
-      { userId: userId.toString() },
-      { 
-        $set: { 
-          'miningState.isMining': true, 
-          'miningState.sessionStartTime': now,
-          'miningState.lastUpdated': now
-        }
-      },
-      { new: true }
-    );
-    res.json({ success: true, miningState: user.miningState });
+    let user = await User.findOne({ userId: userId.toString() });
+    if (!user) return res.status(404).json({ success: false, message: "User not found" });
+
+    // If an existing session is still running and within 1 hour, don't restart — return active state
+    if (user.miningState && user.miningState.isMining && user.miningState.sessionStartTime) {
+      const elapsed = now - user.miningState.sessionStartTime;
+      if (elapsed < SESSION_DURATION_MS) {
+        return res.json({
+          success: true,
+          miningState: user.miningState,
+          serverTime: now,
+          alreadyActive: true
+        });
+      }
+    }
+
+    // Start a clean new mining session
+    user.miningState = {
+      isMining: true,
+      sessionStartTime: now,
+      lastUpdated: now
+    };
+    await user.save();
+
+    res.json({ 
+      success: true, 
+      miningState: user.miningState, 
+      serverTime: now 
+    });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
