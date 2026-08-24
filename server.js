@@ -50,6 +50,7 @@ const UserSchema = new mongoose.Schema({
   referredBy: { type: String, default: null, index: true }, // Who invited this user
   referralCode: { type: String, unique: true, index: true },
   totalReferralCoinsEarned: { type: Number, default: 0 },
+  referralEarningsByFren: { type: Map, of: Number, default: {} }, // Map of frenUserId -> total bonus earned
   
   // Check-In Streak
   checkInStreak: { type: Number, default: 0 },
@@ -189,11 +190,23 @@ app.get('/api/user/:userId', async (req, res) => {
       .sort({ createdAt: -1 })
       .limit(50);
 
+    // Map each fren to include the exact 10% bonus earned by this inviter from that fren
+    const frensWithBonus = frens.map(fren => {
+      const frenObj = fren.toObject();
+      const bonusEarned = user.referralEarningsByFren?.get(fren.userId) || 
+                          (user.referralEarningsByFren?.[fren.userId]) || 
+                          0;
+      return {
+        ...frenObj,
+        bonusEarned: parseFloat(bonusEarned.toFixed(2))
+      };
+    });
+
     res.json({
       success: true,
       user,
       frensCount: frens.length,
-      frens
+      frens: frensWithBonus
     });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -255,12 +268,14 @@ app.post('/api/mining/claim', async (req, res) => {
     if (user.referredBy) {
       const bonus10 = parseFloat((claimAmount * 0.10).toFixed(2));
       if (bonus10 > 0) {
+        const frenKey = `referralEarningsByFren.${user.userId}`;
         await User.updateOne(
           { userId: user.referredBy },
           { 
             $inc: { 
               coins: bonus10, 
-              totalReferralCoinsEarned: bonus10 
+              totalReferralCoinsEarned: bonus10,
+              [frenKey]: bonus10
             } 
           }
         );
@@ -299,6 +314,65 @@ app.post('/api/tasks/checkin', async (req, res) => {
 
     await user.save();
     res.json({ success: true, coins: user.coins, checkInStreak: user.checkInStreak });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * 5.1 Complete Task
+ * POST /api/tasks/complete
+ */
+app.post('/api/tasks/complete', async (req, res) => {
+  const { userId, taskId, rewardCoins } = req.body;
+  const reward = parseInt(rewardCoins, 10) || 0;
+
+  try {
+    const user = await User.findOne({ userId: userId.toString() });
+    if (!user) return res.status(404).json({ success: false, message: "User not found" });
+
+    // Check if task is already completed
+    const alreadyDone = user.completedTasks?.some(t => t.taskId === taskId);
+    if (alreadyDone) {
+      return res.json({ success: true, coins: user.coins, message: "Task already claimed" });
+    }
+
+    user.coins += reward;
+    user.totalEarned += reward;
+    user.completedTasks.push({
+      taskId,
+      rewardCoins: reward,
+      completedAt: new Date()
+    });
+
+    await user.save();
+    res.json({ 
+      success: true, 
+      coins: user.coins, 
+      completedTasks: user.completedTasks.map(t => t.taskId) 
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * 5.2 Watch Ad Reward
+ * POST /api/tasks/watch-ad
+ */
+app.post('/api/tasks/watch-ad', async (req, res) => {
+  const { userId, rewardCoins } = req.body;
+  const reward = parseInt(rewardCoins, 10) || 10;
+
+  try {
+    const user = await User.findOne({ userId: userId.toString() });
+    if (!user) return res.status(404).json({ success: false, message: "User not found" });
+
+    user.coins += reward;
+    user.totalEarned += reward;
+    await user.save();
+
+    res.json({ success: true, coins: user.coins });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
