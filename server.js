@@ -348,7 +348,210 @@ app.post('/api/withdraw', async (req, res) => {
 });
 
 // ----------------------------------------------------
-// 5. SERVER LAUNCH
+// 7. ADMIN API ROUTES (Secret Key Protected)
+// ----------------------------------------------------
+
+const ADMIN_SECRET = process.env.ADMIN_SECRET || 'seren_admin_2026';
+
+// Middleware: Admin Secret Key check
+function adminAuth(req, res, next) {
+  const key = req.query.key || req.headers['x-admin-key'];
+  if (key !== ADMIN_SECRET) {
+    return res.status(401).json({ success: false, message: 'Unauthorized' });
+  }
+  next();
+}
+
+/**
+ * Admin: Overall Stats Summary
+ * GET /api/admin/stats?key=xxx
+ */
+app.get('/api/admin/stats', adminAuth, async (req, res) => {
+  try {
+    const totalUsers = await User.countDocuments();
+    const totalCoinsResult = await User.aggregate([
+      { $group: { _id: null, total: { $sum: '$coins' }, totalEarned: { $sum: '$totalEarned' } } }
+    ]);
+    const totalWithdrawals = await Withdraw.countDocuments();
+    const pendingWithdrawals = await Withdraw.countDocuments({ status: 'Pending' });
+    const withdrawAmountResult = await Withdraw.aggregate([
+      { $group: { _id: null, total: { $sum: '$amount' } } }
+    ]);
+    const totalReferrals = await User.countDocuments({ referredBy: { $ne: null } });
+    const premiumUsers = await User.countDocuments({ isPremium: true });
+
+    // New users in last 24h
+    const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const newUsers24h = await User.countDocuments({ createdAt: { $gte: since24h } });
+
+    // Real Growth: Last 7 days user registration breakdown
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
+    sevenDaysAgo.setHours(0, 0, 0, 0);
+
+    const growthAgg = await User.aggregate([
+      { $match: { createdAt: { $gte: sevenDaysAgo } } },
+      {
+        $group: {
+          _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+          count: { $sum: 1 }
+        }
+      },
+      { $sort: { _id: 1 } }
+    ]);
+
+    // Build continuous 7-day timeline
+    const userGrowth7d = [];
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      const dateKey = d.toISOString().split('T')[0];
+      const dayName = d.toLocaleDateString('en-US', { weekday: 'short', month: 'numeric', day: 'numeric' });
+      const found = growthAgg.find(g => g._id === dateKey);
+      userGrowth7d.push({
+        date: dateKey,
+        day: dayName,
+        users: found ? found.count : 0
+      });
+    }
+
+    res.json({
+      success: true,
+      stats: {
+        totalUsers,
+        newUsers24h,
+        premiumUsers,
+        totalCoins: totalCoinsResult[0]?.total || 0,
+        totalCoinsEarned: totalCoinsResult[0]?.totalEarned || 0,
+        totalWithdrawals,
+        pendingWithdrawals,
+        totalWithdrawAmount: withdrawAmountResult[0]?.total || 0,
+        totalReferrals,
+        userGrowth7d
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * Admin: All Users List (paginated)
+ * GET /api/admin/users?key=xxx&page=1&limit=50&search=username
+ */
+app.get('/api/admin/users', adminAuth, async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 50;
+    const search = req.query.search || '';
+    const skip = (page - 1) * limit;
+
+    const query = search
+      ? {
+          $or: [
+            { userId: { $regex: search, $options: 'i' } },
+            { username: { $regex: search, $options: 'i' } },
+            { firstName: { $regex: search, $options: 'i' } }
+          ]
+        }
+      : {};
+
+    const [users, total] = await Promise.all([
+      User.find(query)
+        .select('userId username firstName lastName photoUrl coins totalEarned isPremium referredBy referralCode totalReferralCoinsEarned checkInStreak createdAt lastActiveAt miningState')
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit),
+      User.countDocuments(query)
+    ]);
+
+    // Attach referral counts
+    const usersWithRefs = await Promise.all(users.map(async (u) => {
+      const refCount = await User.countDocuments({ referredBy: u.userId });
+      return { ...u.toObject(), refCount };
+    }));
+
+    res.json({
+      success: true,
+      users: usersWithRefs,
+      pagination: { page, limit, total, pages: Math.ceil(total / limit) }
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * Admin: All Withdrawals List
+ * GET /api/admin/withdrawals?key=xxx&status=Pending
+ * PATCH /api/admin/withdrawals/:id?key=xxx  - Update status
+ */
+app.get('/api/admin/withdrawals', adminAuth, async (req, res) => {
+  try {
+    const statusFilter = req.query.status;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 50;
+    const skip = (page - 1) * limit;
+
+    const query = statusFilter ? { status: statusFilter } : {};
+    const [withdrawals, total] = await Promise.all([
+      Withdraw.find(query).sort({ timestamp: -1 }).skip(skip).limit(limit),
+      Withdraw.countDocuments(query)
+    ]);
+
+    // Attach user info
+    const withUsers = await Promise.all(withdrawals.map(async (w) => {
+      const user = await User.findOne({ userId: w.userId }).select('username firstName');
+      return { ...w.toObject(), userInfo: user };
+    }));
+
+    res.json({
+      success: true,
+      withdrawals: withUsers,
+      pagination: { page, limit, total, pages: Math.ceil(total / limit) }
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * Admin: Update Withdrawal Status (Approve / Reject)
+ * PATCH /api/admin/withdrawals/:id?key=xxx
+ */
+app.patch('/api/admin/withdrawals/:id', adminAuth, async (req, res) => {
+  try {
+    const { status } = req.body; // 'Completed' | 'Rejected'
+    const updated = await Withdraw.findByIdAndUpdate(
+      req.params.id,
+      { $set: { status } },
+      { new: true }
+    );
+    if (!updated) return res.status(404).json({ success: false, message: 'Record not found' });
+    res.json({ success: true, withdrawal: updated });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * Admin: Get single user detail + full mining history
+ * GET /api/admin/users/:userId?key=xxx
+ */
+app.get('/api/admin/users/:userId', adminAuth, async (req, res) => {
+  try {
+    const user = await User.findOne({ userId: req.params.userId });
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    const refCount = await User.countDocuments({ referredBy: user.userId });
+    const withdrawals = await Withdraw.find({ userId: user.userId }).sort({ timestamp: -1 });
+    res.json({ success: true, user, refCount, withdrawals });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ----------------------------------------------------
+// 8. SERVER LAUNCH
 // ----------------------------------------------------
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Seren Backend Server running on port ${PORT}`));
