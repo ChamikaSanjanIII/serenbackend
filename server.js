@@ -44,7 +44,7 @@ const VideoSchema = new mongoose.Schema({
   title: { type: String, required: true },
   image: { type: String, default: '' },
   link: { type: String, default: '' },
-  country: { type: String, default: 'US' },
+  country: { type: String, default: '' },
   isRemoved: { type: Boolean, default: false },
   embedUrl: { type: String, default: '' },
   views: { type: Number, default: 0 },
