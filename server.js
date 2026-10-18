@@ -223,66 +223,102 @@ function generateSlug(pageUrl, title) {
   return '';
 }
 
-// Helper to auto-detect country code from title & pageUrl (returns empty '' if none found)
+// Comprehensive World Country Detection Map
+// Supports Country Names, Demonyms, Common Slang, and Spelling variations (e.g. Pakistan, Pakisthan, etc.)
+const WORLD_COUNTRY_RULES = [
+  // South Asia (Checked first to prevent overlapping matches)
+  { code: 'BD', regex: /\b(bangladesh|bangladeshi|dhaka|bangla|chittagong|sylhet)\b/i },
+  { code: 'LK', regex: /\b(sri\s*lanka|sri\s*lankan|lankan|sinhala|ceylon|colombo|kandy|galle|jaffna)\b|[\u0D80-\u0DFF]/i },
+  { code: 'PK', regex: /\b(pakistan|pakisthan|pakistani|pakisthani|lahore|karachi|islamabad|punjabi\s*pakistan|pashto|urdu|peshawar|rawalpindi)\b/i },
+  { code: 'NP', regex: /\b(nepal|nepali|nepalese|kathmandu|gurkha)\b/i },
+  { code: 'IN', regex: /\b(india|indian|desi|hindi|tamil|telugu|malayalam|marathi|punjabi|gujarati|bhojpuri|kannada|assamese|bihari|delhi|mumbai|kerala|kolkata|chennai|bangalore)\b/i },
+
+  // East & Southeast Asia
+  { code: 'JP', regex: /\b(japan|japanese|jav|tokyo|osaka|kyoto)\b/i },
+  { code: 'KR', regex: /\b(korea|korean|south\s*korea|seoul|busan|k-pop)\b/i },
+  { code: 'CN', regex: /\b(china|chinese|mandarin|beijing|shanghai|guangzhou)\b/i },
+  { code: 'TW', regex: /\b(taiwan|taiwanese|taipei)\b/i },
+  { code: 'TH', regex: /\b(thailand|thai|bangkok|phuket|pattaya|siamese)\b/i },
+  { code: 'VN', regex: /\b(vietnam|vietnamese|hanoi|saigon)\b/i },
+  { code: 'PH', regex: /\b(philippines|filipino|filipina|pinoy|pinay|manila|tagalog)\b/i },
+  { code: 'ID', regex: /\b(indonesia|indonesian|jakarta|bali|javanese)\b/i },
+  { code: 'MY', regex: /\b(malaysia|malaysian|kuala\s*lumpur|malay)\b/i },
+  { code: 'SG', regex: /\b(singapore|singaporean)\b/i },
+  { code: 'MM', regex: /\b(myanmar|burma|burmese|yangon)\b/i },
+  { code: 'KH', regex: /\b(cambodia|cambodian|khmer|phnom\s*penh)\b/i },
+
+  // Middle East & Arab World
+  { code: 'AE', regex: /\b(dubai|uae|united\s*arab\s*emirates|abu\s*dhabi|emirati)\b/i },
+  { code: 'SA', regex: /\b(saudi|saudi\s*arabia|riyadh|jeddah)\b/i },
+  { code: 'IR', regex: /\b(iran|iranian|persia|persian|tehran)\b/i },
+  { code: 'TR', regex: /\b(turkey|turkish|istanbul|ankara)\b/i },
+  { code: 'IQ', regex: /\b(iraq|iraqi|baghdad)\b/i },
+  { code: 'EG', regex: /\b(egypt|egyptian|cairo)\b/i },
+  { code: 'LB', regex: /\b(lebanon|lebanese|beirut)\b/i },
+  { code: 'IL', regex: /\b(israel|israeli|tel\s*aviv|jerusalem)\b/i },
+  { code: 'QA', regex: /\b(qatar|qatari|doha)\b/i },
+  { code: 'KW', regex: /\b(kuwait|kuwaiti)\b/i },
+
+  // Europe
+  { code: 'UK', regex: /\b(united\s*kingdom|britain|british|england|english|london|scotland|scottish|wales|welsh)\b/i },
+  { code: 'RU', regex: /\b(russia|russian|moscow|saint\s*petersburg)\b/i },
+  { code: 'UA', regex: /\b(ukraine|ukrainian|kyiv)\b/i },
+  { code: 'FR', regex: /\b(france|french|paris)\b/i },
+  { code: 'DE', regex: /\b(germany|german|berlin|deutsch)\b/i },
+  { code: 'IT', regex: /\b(italy|italian|rome|milan)\b/i },
+  { code: 'ES', regex: /\b(spain|spanish|madrid|barcelona)\b/i },
+  { code: 'PT', regex: /\b(portugal|portuguese|lisbon)\b/i },
+  { code: 'NL', regex: /\b(netherlands|holland|dutch|amsterdam)\b/i },
+  { code: 'BE', regex: /\b(belgium|belgian|brussels)\b/i },
+  { code: 'CH', regex: /\b(switzerland|swiss|zurich|geneva)\b/i },
+  { code: 'SE', regex: /\b(sweden|swedish|stockholm)\b/i },
+  { code: 'NO', regex: /\b(norway|norwegian|oslo)\b/i },
+  { code: 'FI', regex: /\b(finland|finnish|helsinki)\b/i },
+  { code: 'DK', regex: /\b(denmark|danish|copenhagen)\b/i },
+  { code: 'PL', regex: /\b(poland|polish|warsaw)\b/i },
+  { code: 'CZ', regex: /\b(czech|czech\s*republic|prague)\b/i },
+  { code: 'RO', regex: /\b(romania|romanian|bucharest)\b/i },
+  { code: 'HU', regex: /\b(hungary|hungarian|budapest)\b/i },
+  { code: 'GR', regex: /\b(greece|greek|athens)\b/i },
+  { code: 'IE', regex: /\b(ireland|irish|dublin)\b/i },
+
+  // Americas & Oceania
+  { code: 'US', regex: /\b(united\s*states|usa|american|california|new\s*york|texas|florida)\b/i },
+  { code: 'CA', regex: /\b(canada|canadian|toronto|vancouver|montreal)\b/i },
+  { code: 'AU', regex: /\b(australia|australian|aussie|sydney|melbourne)\b/i },
+  { code: 'NZ', regex: /\b(new\s*zealand|kiwi|auckland)\b/i },
+  { code: 'BR', regex: /\b(brazil|brazilian|rio|sao\s*paulo)\b/i },
+  { code: 'MX', regex: /\b(mexico|mexican|tijuana)\b/i },
+  { code: 'CO', regex: /\b(colombia|colombian|bogota|medellin)\b/i },
+  { code: 'AR', regex: /\b(argentina|argentine|buenos\s*aires)\b/i },
+  { code: 'CL', regex: /\b(chile|chilean|santiago)\b/i },
+  { code: 'PE', regex: /\b(peru|peruvian|lima)\b/i },
+  { code: 'VE', regex: /\b(venezuela|venezuelan|caracas)\b/i },
+
+  // Africa
+  { code: 'ZA', regex: /\b(south\s*africa|south\s*african|johannesburg|cape\s*town)\b/i },
+  { code: 'NG', regex: /\b(nigeria|nigerian|lagos)\b/i },
+  { code: 'KE', regex: /\b(kenya|kenyan|nairobi)\b/i },
+  { code: 'GH', regex: /\b(ghana|ghanaian|accra)\b/i },
+  { code: 'MA', regex: /\b(morocco|moroccan|casablanca)\b/i }
+];
+
+// Helper to auto-detect country code purely from Title (returns empty '' if none found)
 function detectCountry(title = '', pageUrl = '', explicitCountry = '') {
-  if (explicitCountry && explicitCountry !== 'ALL' && explicitCountry !== '') {
+  if (explicitCountry && explicitCountry !== 'ALL' && explicitCountry !== 'AUTO' && explicitCountry !== 'NONE' && explicitCountry !== '') {
     return explicitCountry.trim().toUpperCase();
   }
 
-  const text = `${title} ${pageUrl}`.toLowerCase();
+  const rawTitle = (title || '').toLowerCase();
+  if (!rawTitle) return '';
 
-  // Sri Lanka
-  if (
-    /\b(sri\s*lanka|sri\s*lankan|lankan|sinhala|ceylon|colombo|kandy|galle)\b/i.test(text) ||
-    /[\u0D80-\u0DFF]/.test(text) // Sinhala unicode range
-  ) {
-    return 'LK';
+  for (const rule of WORLD_COUNTRY_RULES) {
+    if (rule.regex.test(rawTitle)) {
+      return rule.code;
+    }
   }
 
-  // India
-  if (
-    /\b(india|indian|desi|hindi|tamil|telugu|malayalam|bengali|marathi|punjabi|gujarati|bhojpuri|kannada|urdu|assamese|bihari|delhi|mumbai|kerala)\b/i.test(text) ||
-    /indian-video/i.test(pageUrl)
-  ) {
-    return 'IN';
-  }
-
-  // Bangladesh
-  if (/\b(bangladesh|bangladeshi|dhaka|bangla)\b/i.test(text)) {
-    return 'BD';
-  }
-
-  // Pakistan
-  if (/\b(pakistan|pakistani|lahore|karachi|pashto)\b/i.test(text)) {
-    return 'PK';
-  }
-
-  // Japan
-  if (/\b(japan|japanese|jav|tokyo)\b/i.test(text)) {
-    return 'JP';
-  }
-
-  // Korea
-  if (/\b(korea|korean|seoul|k-pop)\b/i.test(text)) {
-    return 'KR';
-  }
-
-  // China / Taiwan
-  if (/\b(china|chinese|beijing|taiwan|taiwanese)\b/i.test(text)) {
-    return 'CN';
-  }
-
-  // United States
-  if (/\b(united\s*states|usa|american)\b/i.test(text)) {
-    return 'US';
-  }
-
-  // United Kingdom
-  if (/\b(united\s*kingdom|british|london)\b/i.test(text)) {
-    return 'UK';
-  }
-
-  // Return empty if not detected
+  // If no world country keyword is found in Title, leave completely empty ('')
   return '';
 }
 
@@ -388,51 +424,54 @@ app.post('/api/videos/:id/react', async (req, res) => {
   }
 });
 
-// Admin: Bulk import videos from JSON
+// Admin: Bulk import videos from JSON (Upsert / Replace existing or Insert new)
 app.post('/api/videos/bulk', authMiddleware, async (req, res) => {
   try {
-    const { videos, defaultCountry = 'US' } = req.body;
+    const { videos, defaultCountry = 'AUTO' } = req.body;
 
     if (!Array.isArray(videos) || videos.length === 0) {
       return res.status(400).json({ error: 'Please provide a non-empty array of videos.' });
     }
 
-    // 1. Fetch existing video titles & links to prevent duplicates
-    const existingVideos = await Video.find({}, { title: 1, link: 1, embedUrl: 1 }).lean();
-    const existingTitles = new Set(existingVideos.map(v => (v.title || '').trim().toLowerCase()));
-    const existingLinks = new Set(
-      existingVideos
-        .map(v => (v.link || '').trim().toLowerCase())
-        .filter(Boolean)
-    );
-    const existingEmbeds = new Set(
-      existingVideos
-        .map(v => (v.embedUrl || '').trim())
-        .filter(Boolean)
-    );
+    // 1. Fetch all existing video records with their identifiers
+    const existingVideos = await Video.find({}, { _id: 1, title: 1, link: 1, slug: 1, embedUrl: 1 }).lean();
+    
+    // Map existing videos by lowercase Title, Link, and Slug
+    const existingByTitle = new Map();
+    const existingByLink = new Map();
+    const existingBySlug = new Map();
+
+    for (const v of existingVideos) {
+      if (v.title) existingByTitle.set(v.title.trim().toLowerCase(), v._id);
+      if (v.link) existingByLink.set(v.link.trim().toLowerCase(), v._id);
+      if (v.slug) existingBySlug.set(v.slug.trim().toLowerCase(), v._id);
+    }
 
     const toInsert = [];
-    let skippedCount = 0;
-    const skippedSamples = [];
-
-    // Track duplicates inside the incoming batch itself as well
+    const bulkUpdateOps = [];
+    let updatedCount = 0;
     const batchSeenTitles = new Set();
 
     for (const item of videos) {
       const rawTitle = (item.title || '').trim();
       const lowerTitle = rawTitle.toLowerCase();
-      
+      if (!rawTitle) continue;
+
+      // Skip in-batch duplicate rows if already processed
+      if (batchSeenTitles.has(lowerTitle)) continue;
+      batchSeenTitles.add(lowerTitle);
+
       const rawImage = (item.thumbnailUrl || item.image || item.thumbnail || '').trim();
       const rawLink = (item.pageUrl || item.link || item.url || '').trim();
       const rawStream = (item.streamUrl || item.videoUrl || item.sourceUrl || item.embedUrl || '').trim();
       const rawDuration = (item.duration || '').trim();
       const rawDescription = (item.description || '').trim();
       
-      // Auto-detect country if available from title/URL; otherwise use user default or leave empty
-      const detectedCountry = detectCountry(rawTitle, rawLink, item.country || (defaultCountry !== 'ALL' && defaultCountry !== 'AUTO' ? defaultCountry : ''));
+      // Auto-detect country purely from Title
+      const detectedCountry = detectCountry(rawTitle, rawLink, item.country || (defaultCountry !== 'ALL' && defaultCountry !== 'AUTO' && defaultCountry !== 'NONE' ? defaultCountry : ''));
       const rawCountry = detectedCountry;
 
-      // Normalize embedUrls to JSON array string for site compatibility
+      // Normalize embedUrls to JSON array string
       let finalEmbedUrl = '';
       if (rawStream) {
         if (rawStream.startsWith('[')) {
@@ -442,47 +481,59 @@ app.post('/api/videos/bulk', authMiddleware, async (req, res) => {
         }
       }
 
-      // Check if duplicate
-      const isTitleDuplicate = lowerTitle && (existingTitles.has(lowerTitle) || batchSeenTitles.has(lowerTitle));
-      const isLinkDuplicate = rawLink && existingLinks.has(rawLink.toLowerCase());
-      const isEmbedDuplicate = rawStream && existingEmbeds.has(finalEmbedUrl);
-
-      if (isTitleDuplicate || isLinkDuplicate || isEmbedDuplicate) {
-        skippedCount++;
-        if (skippedSamples.length < 5) {
-          skippedSamples.push(rawTitle || 'Untitled Video');
-        }
-        continue;
-      }
-
-      if (!rawTitle) {
-        skippedCount++;
-        continue;
-      }
-
-      // Mark as seen in this batch
-      batchSeenTitles.add(lowerTitle);
-      if (rawLink) existingLinks.add(rawLink.toLowerCase());
-      if (finalEmbedUrl) existingEmbeds.add(finalEmbedUrl);
-
       const computedSlug = item.slug || generateSlug(rawLink, rawTitle);
 
-      toInsert.push({
-        title: rawTitle,
-        image: rawImage,
-        link: rawLink,
-        country: rawCountry,
-        isRemoved: false,
-        embedUrl: finalEmbedUrl,
-        description: rawDescription,
-        duration: rawDuration,
-        slug: computedSlug,
-        views: 0,
-        likes: 0,
-        dislikes: 0
-      });
+      // Check if this video already exists in MongoDB
+      const existingId = 
+        existingByTitle.get(lowerTitle) ||
+        (rawLink ? existingByLink.get(rawLink.toLowerCase()) : null) ||
+        (computedSlug ? existingBySlug.get(computedSlug.toLowerCase()) : null);
+
+      if (existingId) {
+        // REPLACE / UPDATE EXISTING VIDEO DATA
+        const updateFields = {
+          title: rawTitle,
+          country: rawCountry,
+          slug: computedSlug
+        };
+        if (rawImage) updateFields.image = rawImage;
+        if (rawLink) updateFields.link = rawLink;
+        if (finalEmbedUrl) updateFields.embedUrl = finalEmbedUrl;
+        if (rawDuration) updateFields.duration = rawDuration;
+        if (rawDescription) updateFields.description = rawDescription;
+
+        bulkUpdateOps.push({
+          updateOne: {
+            filter: { _id: existingId },
+            update: { $set: updateFields }
+          }
+        });
+        updatedCount++;
+      } else {
+        // INSERT AS NEW VIDEO
+        toInsert.push({
+          title: rawTitle,
+          image: rawImage,
+          link: rawLink,
+          country: rawCountry,
+          isRemoved: false,
+          embedUrl: finalEmbedUrl,
+          description: rawDescription,
+          duration: rawDuration,
+          slug: computedSlug,
+          views: 0,
+          likes: 0,
+          dislikes: 0
+        });
+      }
     }
 
+    // Execute bulk updates
+    if (bulkUpdateOps.length > 0) {
+      await Video.bulkWrite(bulkUpdateOps, { ordered: false });
+    }
+
+    // Execute new inserts
     let insertedCount = 0;
     if (toInsert.length > 0) {
       const insertedDocs = await Video.insertMany(toInsert, { ordered: false });
@@ -493,12 +544,12 @@ app.post('/api/videos/bulk', authMiddleware, async (req, res) => {
       success: true,
       totalReceived: videos.length,
       addedCount: insertedCount,
-      skippedCount: skippedCount,
-      skippedSamples
+      updatedCount: updatedCount,
+      skippedCount: 0
     });
   } catch (err) {
-    console.error("Bulk import error:", err);
-    res.status(500).json({ error: 'Failed to import videos.', details: err.message });
+    console.error("Bulk import/replace error:", err);
+    res.status(500).json({ error: 'Failed to process videos.', details: err.message });
   }
 });
 
