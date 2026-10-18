@@ -7,7 +7,8 @@ require('dotenv').config();
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // ----------------------------------------------------
 // 1. CONFIGURATION & DATABASE CONNECTION
@@ -50,7 +51,8 @@ const VideoSchema = new mongoose.Schema({
   likes: { type: Number, default: 0 },
   dislikes: { type: Number, default: 0 },
   description: { type: String, default: '' },
-  duration: { type: String, default: '' }
+  duration: { type: String, default: '' },
+  slug: { type: String, default: '', index: true }
 }, { timestamps: true });
 
 // To maintain seamless compatibility with frontend using item._id as $id
@@ -189,6 +191,101 @@ app.get('/api/admin/me', authMiddleware, async (req, res) => {
 
 // ==================== VIDEOS / GALLERY ====================
 
+// Helper to extract or generate clean SEO slug from pageUrl or title
+function generateSlug(pageUrl, title) {
+  if (pageUrl) {
+    try {
+      const cleanUrl = pageUrl.split('?')[0].replace(/\/+$/, '');
+      const parts = cleanUrl.split('/').filter(Boolean);
+      if (parts.length > 0) {
+        let lastPart = parts[parts.length - 1];
+        // If last part is purely numeric (e.g. video ID like /12214), try preceding part if exists
+        if (/^\d+$/.test(lastPart) && parts.length > 1) {
+          lastPart = parts[parts.length - 2] + '-' + lastPart;
+        }
+        lastPart = lastPart.toLowerCase().replace(/[^a-z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+        if (lastPart) return lastPart;
+      }
+    } catch (e) {
+      // Fallback
+    }
+  }
+
+  if (title) {
+    return title
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 100);
+  }
+
+  return '';
+}
+
+// Helper to auto-detect country code from title & pageUrl (returns empty '' if none found)
+function detectCountry(title = '', pageUrl = '', explicitCountry = '') {
+  if (explicitCountry && explicitCountry !== 'ALL' && explicitCountry !== '') {
+    return explicitCountry.trim().toUpperCase();
+  }
+
+  const text = `${title} ${pageUrl}`.toLowerCase();
+
+  // Sri Lanka
+  if (
+    /\b(sri\s*lanka|sri\s*lankan|lankan|sinhala|ceylon|colombo|kandy|galle)\b/i.test(text) ||
+    /[\u0D80-\u0DFF]/.test(text) // Sinhala unicode range
+  ) {
+    return 'LK';
+  }
+
+  // India
+  if (
+    /\b(india|indian|desi|hindi|tamil|telugu|malayalam|bengali|marathi|punjabi|gujarati|bhojpuri|kannada|urdu|assamese|bihari|delhi|mumbai|kerala)\b/i.test(text) ||
+    /indian-video/i.test(pageUrl)
+  ) {
+    return 'IN';
+  }
+
+  // Bangladesh
+  if (/\b(bangladesh|bangladeshi|dhaka|bangla)\b/i.test(text)) {
+    return 'BD';
+  }
+
+  // Pakistan
+  if (/\b(pakistan|pakistani|lahore|karachi|pashto)\b/i.test(text)) {
+    return 'PK';
+  }
+
+  // Japan
+  if (/\b(japan|japanese|jav|tokyo)\b/i.test(text)) {
+    return 'JP';
+  }
+
+  // Korea
+  if (/\b(korea|korean|seoul|k-pop)\b/i.test(text)) {
+    return 'KR';
+  }
+
+  // China / Taiwan
+  if (/\b(china|chinese|beijing|taiwan|taiwanese)\b/i.test(text)) {
+    return 'CN';
+  }
+
+  // United States
+  if (/\b(united\s*states|usa|american)\b/i.test(text)) {
+    return 'US';
+  }
+
+  // United Kingdom
+  if (/\b(united\s*kingdom|british|london)\b/i.test(text)) {
+    return 'UK';
+  }
+
+  // Return empty if not detected
+  return '';
+}
+
 // Public: Get all videos (sorted by latest)
 app.get('/api/videos', async (req, res) => {
   try {
@@ -197,6 +294,31 @@ app.get('/api/videos', async (req, res) => {
   } catch (err) {
     console.error("Fetch videos error:", err);
     res.status(500).json({ error: 'Failed to fetch videos.' });
+  }
+});
+
+// Public: Get single video by ID or Slug
+app.get('/api/videos/:idOrSlug', async (req, res) => {
+  try {
+    const { idOrSlug } = req.params;
+    let video = null;
+
+    if (mongoose.Types.ObjectId.isValid(idOrSlug)) {
+      video = await Video.findById(idOrSlug);
+    }
+
+    if (!video) {
+      video = await Video.findOne({ slug: idOrSlug });
+    }
+
+    if (!video) {
+      return res.status(404).json({ error: 'Video not found.' });
+    }
+
+    res.json(video);
+  } catch (err) {
+    console.error("Fetch video error:", err);
+    res.status(500).json({ error: 'Failed to fetch video.' });
   }
 });
 
@@ -266,19 +388,137 @@ app.post('/api/videos/:id/react', async (req, res) => {
   }
 });
 
+// Admin: Bulk import videos from JSON
+app.post('/api/videos/bulk', authMiddleware, async (req, res) => {
+  try {
+    const { videos, defaultCountry = 'US' } = req.body;
+
+    if (!Array.isArray(videos) || videos.length === 0) {
+      return res.status(400).json({ error: 'Please provide a non-empty array of videos.' });
+    }
+
+    // 1. Fetch existing video titles & links to prevent duplicates
+    const existingVideos = await Video.find({}, { title: 1, link: 1, embedUrl: 1 }).lean();
+    const existingTitles = new Set(existingVideos.map(v => (v.title || '').trim().toLowerCase()));
+    const existingLinks = new Set(
+      existingVideos
+        .map(v => (v.link || '').trim().toLowerCase())
+        .filter(Boolean)
+    );
+    const existingEmbeds = new Set(
+      existingVideos
+        .map(v => (v.embedUrl || '').trim())
+        .filter(Boolean)
+    );
+
+    const toInsert = [];
+    let skippedCount = 0;
+    const skippedSamples = [];
+
+    // Track duplicates inside the incoming batch itself as well
+    const batchSeenTitles = new Set();
+
+    for (const item of videos) {
+      const rawTitle = (item.title || '').trim();
+      const lowerTitle = rawTitle.toLowerCase();
+      
+      const rawImage = (item.thumbnailUrl || item.image || item.thumbnail || '').trim();
+      const rawLink = (item.pageUrl || item.link || item.url || '').trim();
+      const rawStream = (item.streamUrl || item.videoUrl || item.sourceUrl || item.embedUrl || '').trim();
+      const rawDuration = (item.duration || '').trim();
+      const rawDescription = (item.description || '').trim();
+      
+      // Auto-detect country if available from title/URL; otherwise use user default or leave empty
+      const detectedCountry = detectCountry(rawTitle, rawLink, item.country || (defaultCountry !== 'ALL' && defaultCountry !== 'AUTO' ? defaultCountry : ''));
+      const rawCountry = detectedCountry;
+
+      // Normalize embedUrls to JSON array string for site compatibility
+      let finalEmbedUrl = '';
+      if (rawStream) {
+        if (rawStream.startsWith('[')) {
+          finalEmbedUrl = rawStream;
+        } else {
+          finalEmbedUrl = JSON.stringify([rawStream]);
+        }
+      }
+
+      // Check if duplicate
+      const isTitleDuplicate = lowerTitle && (existingTitles.has(lowerTitle) || batchSeenTitles.has(lowerTitle));
+      const isLinkDuplicate = rawLink && existingLinks.has(rawLink.toLowerCase());
+      const isEmbedDuplicate = rawStream && existingEmbeds.has(finalEmbedUrl);
+
+      if (isTitleDuplicate || isLinkDuplicate || isEmbedDuplicate) {
+        skippedCount++;
+        if (skippedSamples.length < 5) {
+          skippedSamples.push(rawTitle || 'Untitled Video');
+        }
+        continue;
+      }
+
+      if (!rawTitle) {
+        skippedCount++;
+        continue;
+      }
+
+      // Mark as seen in this batch
+      batchSeenTitles.add(lowerTitle);
+      if (rawLink) existingLinks.add(rawLink.toLowerCase());
+      if (finalEmbedUrl) existingEmbeds.add(finalEmbedUrl);
+
+      const computedSlug = item.slug || generateSlug(rawLink, rawTitle);
+
+      toInsert.push({
+        title: rawTitle,
+        image: rawImage,
+        link: rawLink,
+        country: rawCountry,
+        isRemoved: false,
+        embedUrl: finalEmbedUrl,
+        description: rawDescription,
+        duration: rawDuration,
+        slug: computedSlug,
+        views: 0,
+        likes: 0,
+        dislikes: 0
+      });
+    }
+
+    let insertedCount = 0;
+    if (toInsert.length > 0) {
+      const insertedDocs = await Video.insertMany(toInsert, { ordered: false });
+      insertedCount = insertedDocs.length;
+    }
+
+    res.json({
+      success: true,
+      totalReceived: videos.length,
+      addedCount: insertedCount,
+      skippedCount: skippedCount,
+      skippedSamples
+    });
+  } catch (err) {
+    console.error("Bulk import error:", err);
+    res.status(500).json({ error: 'Failed to import videos.', details: err.message });
+  }
+});
+
 // Admin: Create video
 app.post('/api/videos', authMiddleware, async (req, res) => {
   try {
-    const { title, image, link, country, isRemoved, embedUrl, description, duration } = req.body;
+    const { title, image, link, country, isRemoved, embedUrl, description, duration, slug } = req.body;
+    const computedSlug = slug || generateSlug(link, title);
+    const finalCountry = country ? country.trim().toUpperCase() : detectCountry(title, link);
+
     const newVideo = await Video.create({
       title,
       image: image || '',
       link: link || '',
-      country: country || 'US',
+      country: finalCountry,
       isRemoved: Boolean(isRemoved),
       embedUrl: embedUrl || '',
       description: description || '',
-      duration: duration || ''
+      duration: duration || '',
+      slug: computedSlug
     });
     res.status(201).json(newVideo);
   } catch (err) {
@@ -290,7 +530,9 @@ app.post('/api/videos', authMiddleware, async (req, res) => {
 // Admin: Update video
 app.put('/api/videos/:id', authMiddleware, async (req, res) => {
   try {
-    const { title, image, link, country, isRemoved, embedUrl, description, duration } = req.body;
+    const { title, image, link, country, isRemoved, embedUrl, description, duration, slug } = req.body;
+    const computedSlug = slug || generateSlug(link, title);
+
     const updated = await Video.findByIdAndUpdate(
       req.params.id,
       {
@@ -301,7 +543,8 @@ app.put('/api/videos/:id', authMiddleware, async (req, res) => {
         isRemoved: Boolean(isRemoved),
         embedUrl,
         description: description || '',
-        duration: duration || ''
+        duration: duration || '',
+        slug: computedSlug
       },
       { new: true }
     );
