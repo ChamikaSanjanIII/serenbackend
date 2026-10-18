@@ -322,11 +322,39 @@ function detectCountry(title = '', pageUrl = '', explicitCountry = '') {
   return '';
 }
 
-// Public: Get all videos (sorted by latest)
+// Public: Get videos (paginated, filterable by country & search)
 app.get('/api/videos', async (req, res) => {
   try {
-    const videos = await Video.find().sort({ createdAt: -1 });
-    res.json(videos);
+    const page    = Math.max(1, parseInt(req.query.page)  || 1);
+    const limit   = Math.min(100, parseInt(req.query.limit) || 24);
+    const country = (req.query.country || '').trim().toUpperCase();
+    const search  = (req.query.search  || '').trim();
+
+    // Build filter
+    const filter = {};
+    if (country && country !== 'ALL') filter.country = country;
+    if (search) {
+      filter.$or = [
+        { title:   { $regex: search, $options: 'i' } },
+        { country: { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    const total  = await Video.countDocuments(filter);
+    const videos = await Video.find(filter)
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit);
+
+    res.json({
+      videos,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit)
+      }
+    });
   } catch (err) {
     console.error("Fetch videos error:", err);
     res.status(500).json({ error: 'Failed to fetch videos.' });
