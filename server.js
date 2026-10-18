@@ -45,7 +45,12 @@ const VideoSchema = new mongoose.Schema({
   link: { type: String, default: '' },
   country: { type: String, default: 'US' },
   isRemoved: { type: Boolean, default: false },
-  embedUrl: { type: String, default: '' }
+  embedUrl: { type: String, default: '' },
+  views: { type: Number, default: 0 },
+  likes: { type: Number, default: 0 },
+  dislikes: { type: Number, default: 0 },
+  description: { type: String, default: '' },
+  duration: { type: String, default: '' }
 }, { timestamps: true });
 
 // To maintain seamless compatibility with frontend using item._id as $id
@@ -195,17 +200,85 @@ app.get('/api/videos', async (req, res) => {
   }
 });
 
+// Public: Increment real view count when video is opened/played
+app.post('/api/videos/:id/view', async (req, res) => {
+  try {
+    const video = await Video.findByIdAndUpdate(
+      req.params.id,
+      { $inc: { views: 1 } },
+      { new: true }
+    );
+    if (!video) {
+      return res.status(404).json({ error: 'Video not found.' });
+    }
+    res.json({ views: video.views, likes: video.likes || 0, dislikes: video.dislikes || 0 });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to register view.' });
+  }
+});
+
+// Public: React to video (like / dislike)
+app.post('/api/videos/:id/react', async (req, res) => {
+  try {
+    const { action } = req.body; // 'like', 'unlike', 'dislike', 'undislike', 'like_from_dislike', 'dislike_from_like'
+    let update = {};
+
+    if (action === 'like') {
+      update = { $inc: { likes: 1 } };
+    } else if (action === 'unlike') {
+      update = { $inc: { likes: -1 } };
+    } else if (action === 'dislike') {
+      update = { $inc: { dislikes: 1 } };
+    } else if (action === 'undislike') {
+      update = { $inc: { dislikes: -1 } };
+    } else if (action === 'like_from_dislike') {
+      update = { $inc: { likes: 1, dislikes: -1 } };
+    } else if (action === 'dislike_from_like') {
+      update = { $inc: { likes: -1, dislikes: 1 } };
+    } else {
+      return res.status(400).json({ error: 'Invalid reaction action.' });
+    }
+
+    const video = await Video.findByIdAndUpdate(
+      req.params.id,
+      update,
+      { new: true }
+    );
+
+    if (!video) {
+      return res.status(404).json({ error: 'Video not found.' });
+    }
+
+    // Ensure non-negative numbers
+    if (video.likes < 0) {
+      video.likes = 0;
+      await video.save();
+    }
+    if (video.dislikes < 0) {
+      video.dislikes = 0;
+      await video.save();
+    }
+
+    res.json({ likes: video.likes, dislikes: video.dislikes });
+  } catch (err) {
+    console.error("Reaction error:", err);
+    res.status(500).json({ error: 'Failed to update reaction.' });
+  }
+});
+
 // Admin: Create video
 app.post('/api/videos', authMiddleware, async (req, res) => {
   try {
-    const { title, image, link, country, isRemoved, embedUrl } = req.body;
+    const { title, image, link, country, isRemoved, embedUrl, description, duration } = req.body;
     const newVideo = await Video.create({
       title,
       image: image || '',
       link: link || '',
       country: country || 'US',
       isRemoved: Boolean(isRemoved),
-      embedUrl: embedUrl || ''
+      embedUrl: embedUrl || '',
+      description: description || '',
+      duration: duration || ''
     });
     res.status(201).json(newVideo);
   } catch (err) {
@@ -217,7 +290,7 @@ app.post('/api/videos', authMiddleware, async (req, res) => {
 // Admin: Update video
 app.put('/api/videos/:id', authMiddleware, async (req, res) => {
   try {
-    const { title, image, link, country, isRemoved, embedUrl } = req.body;
+    const { title, image, link, country, isRemoved, embedUrl, description, duration } = req.body;
     const updated = await Video.findByIdAndUpdate(
       req.params.id,
       {
@@ -226,7 +299,9 @@ app.put('/api/videos/:id', authMiddleware, async (req, res) => {
         link,
         country,
         isRemoved: Boolean(isRemoved),
-        embedUrl
+        embedUrl,
+        description: description || '',
+        duration: duration || ''
       },
       { new: true }
     );
