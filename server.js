@@ -46,7 +46,15 @@ const AdminSchema = new mongoose.Schema({
 
 const Admin = mongoose.model('Admin', AdminSchema);
 
-// Video Schema for Oxenora / FlickReels Short Video Platform
+// Episode Schema for Short Drama Series
+const EpisodeSchema = new mongoose.Schema({
+  episodeNumber: { type: Number, required: true },
+  title: { type: String, default: '' },
+  videoUrl: { type: String, required: true },
+  duration: { type: String, default: '1:00' }
+}, { _id: true });
+
+// Video / Drama Schema for Oxenora Platform
 const VideoSchema = new mongoose.Schema({
   videoId: { type: String, required: true, unique: true, index: true },
   slug: { type: String, required: true, unique: true, index: true },
@@ -59,6 +67,7 @@ const VideoSchema = new mongoose.Schema({
   tags: [{ type: String }],
   modelUsed: { type: String, default: 'Sora / Kling AI' },
   duration: { type: String, default: '0:30' },
+  episodes: [EpisodeSchema],
   views: { type: Number, default: 0 },
   likes: { type: Number, default: 0 },
   downloads: { type: Number, default: 0 },
@@ -245,10 +254,10 @@ app.get('/api/videos/:id', async (req, res) => {
   }
 });
 
-// Admin CREATE New Video
+// Admin CREATE New Video / Drama
 app.post('/api/admin/videos', async (req, res) => {
   try {
-    const { title, videoUrl, thumbnailUrl, category, prompt, tags, modelUsed, isFeatured } = req.body;
+    const { title, videoUrl, thumbnailUrl, category, prompt, tags, modelUsed, isFeatured, episodes } = req.body;
 
     if (!title || !videoUrl || !thumbnailUrl) {
       return res.status(400).json({ success: false, message: 'Title, Video URL, and Thumbnail URL are required.' });
@@ -265,6 +274,25 @@ app.post('/api/admin/videos', async (req, res) => {
       ? tags
       : (tags ? String(tags).split(',').map(t => t.trim().toLowerCase()) : ['ai', 'shortvideo']);
 
+    // Format episodes if provided
+    let episodesList = [];
+    if (Array.isArray(episodes) && episodes.length > 0) {
+      episodesList = episodes.map((ep, idx) => ({
+        episodeNumber: ep.episodeNumber || idx + 1,
+        title: ep.title || `Episode ${idx + 1}`,
+        videoUrl: ep.videoUrl || videoUrl,
+        duration: ep.duration || '1:00'
+      }));
+    } else {
+      // Default Episode 1 using primary videoUrl
+      episodesList = [{
+        episodeNumber: 1,
+        title: 'Episode 1',
+        videoUrl: videoUrl,
+        duration: '1:00'
+      }];
+    }
+
     const newVideo = await Video.create({
       videoId,
       slug,
@@ -276,6 +304,7 @@ app.post('/api/admin/videos', async (req, res) => {
       prompt: prompt || '',
       tags: tagsArray,
       modelUsed: modelUsed || 'Kling 1.5 HD',
+      episodes: episodesList,
       isFeatured: Boolean(isFeatured),
       isActive: true,
       views: 1,
@@ -283,18 +312,48 @@ app.post('/api/admin/videos', async (req, res) => {
       likes: 1,
     });
 
-    return res.status(201).json({ success: true, message: 'Video published to database successfully!', data: newVideo });
+    return res.status(201).json({ success: true, message: 'Drama published with episodes successfully!', data: newVideo });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// Admin UPDATE Video
+// Admin ADD or UPDATE an Episode to existing Drama
+app.post('/api/admin/videos/:id/episodes', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { episodeNumber, title, videoUrl, duration } = req.body;
+
+    if (!videoUrl) {
+      return res.status(400).json({ success: false, message: 'Episode Video URL is required.' });
+    }
+
+    const video = await Video.findById(id);
+    if (!video) {
+      return res.status(404).json({ success: false, message: 'Drama not found.' });
+    }
+
+    const nextEpNum = episodeNumber || (video.episodes.length + 1);
+    video.episodes.push({
+      episodeNumber: nextEpNum,
+      title: title || `Episode ${nextEpNum}`,
+      videoUrl,
+      duration: duration || '1:00'
+    });
+
+    await video.save();
+    return res.json({ success: true, message: `Episode ${nextEpNum} added successfully!`, data: video });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Admin UPDATE Drama
 app.patch('/api/admin/videos/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const updated = await Video.findByIdAndUpdate(id, req.body, { new: true });
-    return res.json({ success: true, data: updated });
+    return res.json({ success: true, data: updated, message: 'Updated successfully!' });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message });
   }
